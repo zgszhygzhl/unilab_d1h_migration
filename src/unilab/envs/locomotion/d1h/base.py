@@ -51,7 +51,7 @@ class D1HControlConfig:
     kd_calf: float = 1.0
 
     wheel_kp: float = 10.0
-    wheel_kd: float = 0.6
+    wheel_kd: float = 0.5
 
     torque_limit_leg: float = 80.0
     torque_limit_wheel: float = 12.0

@@ -41,17 +41,27 @@ from unilab.terrains import (
     TerrainGeneratorCfg,
     flat,
     pyramid_stairs,
+    pyramid_stairs_inv,
 )
 
 
 @dataclass
 class D1HCommands(Commands):
     vel_limit: list[list[float]] = field(
-        default_factory=lambda: [[0.0, 0.0, -0.5], [0.5, 0.0, 0.5]]
+        default_factory=lambda: [[-0.5, -0.2, -1.0], [0.5, 0.2, 1.0]]
     )
-    resampling_time: float = 6.0
+    commands_proportion: list[float] = field(
+        default_factory=lambda: [0.45, 0.1, 0.1, 0.1, 0.05, 0.05, 0.05, 0.05, 0.05]
+    )
+    resampling_time: float = 10.0
     heading_command: bool = False
     rel_standing_envs: float = 0.1
+    max_lin_vel_x_change_rate: float = 0.5
+    max_lin_vel_y_change_rate: float = 0.3
+    max_ang_vel_change_rate: float = 0.5
+    enable_command_buffer: bool = True
+    buffer_smoothing_factor: float = 0.1
+    flip_same_sign_probability: float = 0.2
 
 
 @dataclass
@@ -74,11 +84,18 @@ class D1HRoughTerrainCfg(TerrainGeneratorCfg):
 
     sub_terrains: dict[str, SubTerrainCfg] = field(
         default_factory=lambda: {
-            "flat": flat(proportion=0.2),
+            "flat": flat(proportion=0.1),
             "pyramid_stairs": pyramid_stairs(
-                proportion=0.8,
-                step_height_range=(0.02, 0.16),
-                step_width=0.4,
+                proportion=0.85,
+                step_height_range=(0.015, 0.16),
+                step_width=0.56,
+                platform_width=3.0,
+                border_width=0.2,
+            ),
+            "pyramid_stairs_inv": pyramid_stairs_inv(
+                proportion=0.05,
+                step_height_range=(0.015, 0.16),
+                step_width=0.56,
                 platform_width=3.0,
                 border_width=0.2,
             ),
@@ -86,33 +103,50 @@ class D1HRoughTerrainCfg(TerrainGeneratorCfg):
     )
 
 
+
 @dataclass
 class D1HRewardConfig:
     scales: dict[str, float] = field(
         default_factory=lambda: {
-            "tracking_lin_vel_x": 2.0,
-            "tracking_lin_vel_y": 1.0,
-            "tracking_ang_vel": 1.0,
+            "powers": -2.0e-5,
+            "termination": -100.0,
+            "tracking_lin_vel_x": 15.0,
+            "tracking_lin_vel_y": 5.0,
+            "tracking_ang_vel": 5.0,
             "lin_vel_z": -2.0,
             "ang_vel_xy": -0.05,
-            "base_height": -5.0,
-            "orientation": -2.0,
-            "action_rate": -0.01,
-            "torque": -2.0e-5,
-            "dof_vel": -1.0e-4,
-            "alive": 0.2,
-            "stand_still": -0.5,
-            "feet_air_time": 0.2,
-            "body_feet_distance_x": -0.5,
-            "feet_distance": -0.5,
-            "collision": -1.0,
+            "dof_vel": 0.0,
+            "dof_acc": -2.5e-7,
+            "base_height": -23.0,
+            "feet_air_time": 0.0,
+            "collision": -10.0,
+            "action_rate": -0.1,
+            "stand_still": -1.0,
+            "orientation": -10.0,
+            "no_gait": 5.0,
+            "both_feet_air": -10.0,
+            "body_pos_to_feet_x": 1.0,
+            "body_feet_distance_x": -50.0,
+            "body_feet_distance_y": -100.0,
+            "body_symmetry_y": 0.3,
+            "body_symmetry_z": 0.9,
+            "heading": 0.0,
+            "upward": 1.0,
+            "head_los_distance": -20.0,
         }
     )
     tracking_sigma: float = 0.25
-    base_height_target: float = 0.16
+    base_height_target: float = 0.5
     stand_still_command_threshold: float = 0.1
     desired_feet_distance: float = 0.44
+    feet_distance_range: tuple[float, float] = (0.36, 0.50)
     foot_contact_height: float = 0.11
+    head_los_forward_offset: float = 0.0
+    head_los_deadband: float = 0.05
+    head_los_max_distance: float = 0.35
+    both_feet_air_contact_force: float = 1.0
+    both_feet_air_grace_time: float = 0.04
+    both_feet_air_ramp_time: float = 0.08
 
 
 @registry.envcfg("d1h_rough")
@@ -140,12 +174,12 @@ class D1HRoughCfg(D1HBaseCfg):
 
     num_actions: int = 8
     actor_obs_dim: int = 33
-    n_proprio: int = 36
+    n_proprio: int = 33
     n_scan: int = 187
     history_len: int = 10
-    n_priv_latent: int = 33
-    critic_obs_dim: int = 616
-    policy_obs_dim: int = 616
+    n_priv_latent: int = 36
+    critic_obs_dim: int = 586
+    policy_obs_dim: int = 586
 
 
 @registry.env("d1h_rough", sim_backend="mujoco")
@@ -160,7 +194,7 @@ class D1HRoughEnv(D1HBaseEnv):
         if cfg.actor_obs_dim != 33:
             raise ValueError(f"D1H actor_obs_dim must be 33, got {cfg.actor_obs_dim}")
         expected_critic_dim = (
-            cfg.n_proprio + cfg.n_scan + cfg.history_len * cfg.n_proprio + cfg.n_priv_latent
+            cfg.n_proprio + cfg.n_scan + cfg.n_priv_latent + cfg.history_len * cfg.n_proprio
         )
         if cfg.critic_obs_dim != expected_critic_dim:
             raise ValueError(
@@ -175,6 +209,8 @@ class D1HRoughEnv(D1HBaseEnv):
         self._height_scan_dim = len(cfg.terrain_scan.measured_points_x) * len(
             cfg.terrain_scan.measured_points_y
         )
+        if self._height_scan_dim != cfg.n_scan:
+            raise ValueError(f"D1H height scan dim must be {cfg.n_scan}, got {self._height_scan_dim}")
         self._scene_terrain_origins: np.ndarray | None = None
         scene_cfg = cfg.scene
         terrain_generator = scene_cfg.terrain.generator if scene_cfg.terrain is not None else None
@@ -229,15 +265,34 @@ class D1HRoughEnv(D1HBaseEnv):
             "base_height": d1h_rewards.base_height,
             "orientation": d1h_rewards.orientation,
             "action_rate": d1h_rewards.action_rate,
+            "powers": d1h_rewards.powers,
             "torque": d1h_rewards.torque,
             "dof_vel": d1h_rewards.dof_vel,
-            "alive": d1h_rewards.alive,
+            "dof_acc": d1h_rewards.dof_acc,
+            "termination": d1h_rewards.termination,
             "stand_still": d1h_rewards.stand_still,
             "feet_air_time": d1h_rewards.feet_air_time,
+            "no_gait": d1h_rewards.no_gait,
+            "both_feet_air": d1h_rewards.both_feet_air,
+            "body_pos_to_feet_x": d1h_rewards.body_pos_to_feet_x,
             "body_feet_distance_x": d1h_rewards.body_feet_distance_x,
-            "feet_distance": d1h_rewards.feet_distance,
+            "body_feet_distance_y": d1h_rewards.body_feet_distance_y,
+            "feet_distance": d1h_rewards.body_feet_distance_y,
+            "body_symmetry_y": d1h_rewards.body_symmetry_y,
+            "body_symmetry_z": d1h_rewards.body_symmetry_z,
+            "heading": d1h_rewards.heading,
+            "upward": d1h_rewards.upward,
+            "head_los_distance": d1h_rewards.head_los_distance,
             "collision": d1h_rewards.collision,
         }
+        missing = {
+            name
+            for name, scale in self._reward_cfg.scales.items()
+            if scale != 0 and name not in self._reward_fns
+        }
+        if missing:
+            raise KeyError(f"D1H reward scales reference unregistered rewards: {sorted(missing)}")
+
 
     @property
     def obs_groups_spec(self) -> dict[str, int]:
@@ -255,9 +310,10 @@ class D1HRoughEnv(D1HBaseEnv):
             self._spawn.record_episode_start(env_ids, qpos[:, 0:3])
         self._backend.set_state(env_ids, qpos, qvel)
 
-        commands = self._sample_commands(num_reset)
+        target_commands = self._sample_commands(num_reset)
         info_updates = self._zero_info_updates(num_reset)
-        info_updates["commands"] = commands
+        info_updates["target_commands"] = target_commands
+        info_updates["commands"] = self._initial_smoothed_commands(target_commands)
         if self._cfg.commands.heading_command:
             info_updates["heading_commands"] = sample_heading_commands(self, num_reset)
 
@@ -265,11 +321,10 @@ class D1HRoughEnv(D1HBaseEnv):
             env_ids
         )
         actor_obs = self._compute_actor_obs(info_updates, gyro, projected_gravity, dof_pos, dof_vel)
-        critic_proprio = self._compute_critic_proprio(
-            linvel,
+        critic_proprio = self._compute_proprio(
             gyro,
             projected_gravity,
-            commands,
+            info_updates["commands"],
             dof_pos,
             dof_vel,
             info_updates["current_actions"],
@@ -284,12 +339,10 @@ class D1HRoughEnv(D1HBaseEnv):
             critic_proprio,
             info_updates,
             linvel,
-            projected_gravity,
-            dof_vel,
-            base_height,
             env_ids=env_ids,
         )
         return {"obs": actor_obs, "critic": critic_obs}, info_updates
+
 
     def update_state(self, state: NpEnvState) -> NpEnvState:
         self._update_commands(state.info)
@@ -303,8 +356,7 @@ class D1HRoughEnv(D1HBaseEnv):
             dtype=get_global_dtype(),
         )
         actor_obs = self._compute_actor_obs(state.info, gyro, projected_gravity, dof_pos, dof_vel)
-        critic_proprio = self._compute_critic_proprio(
-            linvel,
+        critic_proprio = self._compute_proprio(
             gyro,
             projected_gravity,
             state.info["commands"],
@@ -320,9 +372,6 @@ class D1HRoughEnv(D1HBaseEnv):
             critic_proprio,
             state.info,
             linvel,
-            projected_gravity,
-            dof_vel,
-            base_height,
         )
         state = state.replace(
             obs={"obs": actor_obs, "critic": critic_obs}, reward=reward, terminated=terminated
@@ -340,8 +389,10 @@ class D1HRoughEnv(D1HBaseEnv):
                     state.info["log"][f"terrain_curriculum/{key}"] = float(value)
         return state
 
+
     def _zero_info_updates(self, num_envs: int) -> dict[str, np.ndarray]:
-        zeros_actions = np.zeros((num_envs, NUM_D1H_ACTIONS), dtype=get_global_dtype())
+        dtype = get_global_dtype()
+        zeros_actions = np.zeros((num_envs, NUM_D1H_ACTIONS), dtype=dtype)
         return {
             "current_actions": zeros_actions.copy(),
             "last_actions": zeros_actions.copy(),
@@ -353,27 +404,84 @@ class D1HRoughEnv(D1HBaseEnv):
             "current_dof_pos": zeros_actions.copy(),
             "current_dof_vel": zeros_actions.copy(),
             "qacc": zeros_actions.copy(),
+            "randomized_lag_tensor": np.zeros((num_envs, 1), dtype=dtype),
+            "mass_params_tensor": np.zeros((num_envs, 4), dtype=dtype),
+            "friction_coeffs_tensor": np.ones((num_envs, 1), dtype=dtype),
+            "restitution_coeffs_tensor": np.zeros((num_envs, 1), dtype=dtype),
+            "motor_strength": np.ones((num_envs, NUM_D1H_ACTIONS), dtype=dtype),
+            "kp_factor": np.ones((num_envs, NUM_D1H_ACTIONS), dtype=dtype),
+            "kd_factor": np.ones((num_envs, NUM_D1H_ACTIONS), dtype=dtype),
         }
 
+    def _initial_smoothed_commands(self, target_commands: np.ndarray) -> np.ndarray:
+        if bool(self._cfg.commands.enable_command_buffer):
+            return np.zeros_like(target_commands, dtype=get_global_dtype())
+        return np.asarray(target_commands, dtype=get_global_dtype()).copy()
+
+
     def _sample_commands(self, num_samples: int) -> np.ndarray:
-        low = np.asarray(self._cfg.commands.vel_limit[0], dtype=get_global_dtype())
-        high = np.asarray(self._cfg.commands.vel_limit[1], dtype=get_global_dtype())
-        commands = sample_velocity_commands(self._rng, num_samples, low, high)
+        dtype = get_global_dtype()
+        low = np.asarray(self._cfg.commands.vel_limit[0], dtype=dtype)
+        high = np.asarray(self._cfg.commands.vel_limit[1], dtype=dtype)
+        raw = self._rng.uniform(low=low, high=high, size=(num_samples, 3)).astype(dtype)
+        commands = np.zeros((num_samples, 3), dtype=dtype)
+        proportions = np.asarray(self._cfg.commands.commands_proportion, dtype=np.float64)
+        if proportions.size != 9:
+            raise ValueError("D1H commands_proportion must contain 9 mode probabilities")
+        total = float(np.sum(proportions))
+        if total <= 0.0:
+            raise ValueError("D1H commands_proportion must have positive sum")
+        modes = self._rng.choice(9, size=num_samples, p=proportions / total)
+        commands[modes == 0, 0] = raw[modes == 0, 0]
+        commands[modes == 1, 1] = raw[modes == 1, 1]
+        mask = modes == 2
+        commands[mask, :2] = raw[mask, :2]
+        commands[modes == 3, 2] = raw[modes == 3, 2]
+        mask = modes == 4
+        commands[mask, 0] = raw[mask, 0]
+        commands[mask, 2] = raw[mask, 2]
+        mask = modes == 5
+        commands[mask, 1] = raw[mask, 1]
+        commands[mask, 2] = raw[mask, 2]
+        mask = modes == 6
+        commands[mask, :] = raw[mask, :]
         standing_prob = float(getattr(self._cfg.commands, "rel_standing_envs", 0.0))
         if standing_prob > 0.0:
             standing = self._rng.uniform(size=(num_samples,)) < min(standing_prob, 1.0)
             commands[standing] = 0.0
         if self._cfg.commands.heading_command:
             commands[:, 2] = 0.0
-        return np.asarray(commands, dtype=get_global_dtype())
+        return np.asarray(commands, dtype=dtype)
+
+    def _maybe_flip_same_sign_commands(self, sampled: np.ndarray, previous: np.ndarray) -> np.ndarray:
+        probability = float(getattr(self._cfg.commands, "flip_same_sign_probability", 0.0))
+        if probability <= 0.0:
+            return sampled
+        out = sampled.copy()
+        low = np.asarray(self._cfg.commands.vel_limit[0], dtype=get_global_dtype())
+        high = np.asarray(self._cfg.commands.vel_limit[1], dtype=get_global_dtype())
+        active = (np.abs(out) > 0.1) & (np.sign(out) == np.sign(previous))
+        flip_mask = active & (self._rng.uniform(size=out.shape) < min(probability, 1.0))
+        flipped = -out
+        valid = (flipped >= low[None, :]) & (flipped <= high[None, :])
+        out = np.where(flip_mask & valid, flipped, out)
+        return out
 
     def _update_commands(self, info: dict[str, Any]) -> None:
+        dtype = get_global_dtype()
+        target = info.get("target_commands")
         commands = info.get("commands")
-        if commands is None:
-            info["commands"] = self._sample_commands(self._num_envs)
+        if target is None:
+            target_arr = self._sample_commands(self._num_envs)
+            info["target_commands"] = target_arr
+            info["commands"] = self._initial_smoothed_commands(target_arr)
             return
 
-        commands_arr = np.asarray(commands, dtype=get_global_dtype())
+        target_arr = np.asarray(target, dtype=dtype)
+        commands_arr = np.asarray(
+            commands if commands is not None else self._initial_smoothed_commands(target_arr),
+            dtype=dtype,
+        )
         resampling_time = float(self._cfg.commands.resampling_time)
         if resampling_time > 0.0:
             interval_steps = max(int(round(resampling_time / self._cfg.ctrl_dt)), 1)
@@ -381,22 +489,50 @@ class D1HRoughEnv(D1HBaseEnv):
             resample_mask = (steps > 0) & ((steps % interval_steps) == 0)
             if np.any(resample_mask):
                 num_resample = int(np.count_nonzero(resample_mask))
-                commands_arr[resample_mask] = self._sample_commands(num_resample)
+                sampled = self._sample_commands(num_resample)
+                sampled = self._maybe_flip_same_sign_commands(sampled, target_arr[resample_mask])
+                target_arr[resample_mask] = sampled
                 if self._cfg.commands.heading_command:
-                    heading_commands = self._ensure_heading_commands(info, commands_arr.shape[0])
+                    heading_commands = self._ensure_heading_commands(info, target_arr.shape[0])
                     heading_commands[resample_mask] = sample_heading_commands(self, num_resample)
                     info["heading_commands"] = heading_commands
 
         if self._cfg.commands.heading_command:
-            heading_commands = self._ensure_heading_commands(info, commands_arr.shape[0])
+            heading_commands = self._ensure_heading_commands(info, target_arr.shape[0])
             apply_heading_yaw_feedback(
-                commands_arr,
-                np.asarray(self._backend.get_base_quat(), dtype=get_global_dtype()),
+                target_arr,
+                np.asarray(self._backend.get_base_quat(), dtype=dtype),
                 heading_commands,
                 stiffness=float(self._cfg.commands.heading_control_stiffness),
                 clip=1.0,
             )
+
+        if bool(self._cfg.commands.enable_command_buffer):
+            max_change_rates = np.asarray(
+                [
+                    self._cfg.commands.max_lin_vel_x_change_rate,
+                    self._cfg.commands.max_lin_vel_y_change_rate,
+                    self._cfg.commands.max_ang_vel_change_rate,
+                ],
+                dtype=dtype,
+            )
+            max_change_per_step = max_change_rates[None, :] * float(self._cfg.ctrl_dt)
+            diff = target_arr[:, :3] - commands_arr[:, :3]
+            is_braking = (np.abs(target_arr[:, :3]) < 0.1) & (
+                np.abs(target_arr[:, :3]) <= np.abs(commands_arr[:, :3])
+            )
+            allowed = np.where(is_braking, 2.0 * max_change_per_step, max_change_per_step)
+            smoothing_factor = float(getattr(self._cfg.commands, "buffer_smoothing_factor", 1.0))
+            if smoothing_factor > 0.0:
+                allowed = allowed * min(max(smoothing_factor, 0.0), 1.0)
+            step = np.clip(diff, -allowed, allowed)
+            commands_arr[:, :3] += step
+        else:
+            commands_arr[:, :3] = target_arr[:, :3]
+
+        info["target_commands"] = target_arr
         info["commands"] = commands_arr
+
 
     def _ensure_heading_commands(self, info: dict[str, Any], num_obs: int) -> np.ndarray:
         heading_commands = info.get("heading_commands")
@@ -444,35 +580,21 @@ class D1HRoughEnv(D1HBaseEnv):
         dof_pos: np.ndarray,
         dof_vel: np.ndarray,
     ) -> np.ndarray:
-        num_obs = gyro.shape[0]
-        commands = np.asarray(info["commands"], dtype=get_global_dtype())
         actions = np.asarray(
-            info.get("current_actions", np.zeros((num_obs, NUM_D1H_ACTIONS))),
+            info.get("current_actions", np.zeros((gyro.shape[0], NUM_D1H_ACTIONS))),
             dtype=get_global_dtype(),
         )
-        diff = dof_pos - self.default_angles[None, :]
-        actor_obs = np.concatenate(
-            [
-                self._obs_noise(gyro, self._cfg.noise_config.scale_gyro),
-                self._obs_noise(projected_gravity, self._cfg.noise_config.scale_gravity),
-                commands[:, :3],
-                self._obs_noise(diff, self._cfg.noise_config.scale_joint_angle),
-                self._obs_noise(dof_vel, self._cfg.noise_config.scale_joint_vel),
-                actions,
-            ],
-            axis=1,
-            dtype=get_global_dtype(),
+        return self._compute_proprio(
+            gyro,
+            projected_gravity,
+            np.asarray(info["commands"], dtype=get_global_dtype()),
+            dof_pos,
+            dof_vel,
+            actions,
         )
-        if actor_obs.shape != (num_obs, self._cfg.actor_obs_dim):
-            raise ValueError(
-                f"D1H actor obs must have shape ({num_obs}, {self._cfg.actor_obs_dim}), "
-                f"got {actor_obs.shape}"
-            )
-        return actor_obs
 
-    def _compute_critic_proprio(
+    def _compute_proprio(
         self,
-        linvel: np.ndarray,
         gyro: np.ndarray,
         projected_gravity: np.ndarray,
         commands: np.ndarray,
@@ -480,10 +602,11 @@ class D1HRoughEnv(D1HBaseEnv):
         dof_vel: np.ndarray,
         actions: np.ndarray,
     ) -> np.ndarray:
-        diff = dof_pos - self.default_angles[None, :]
-        critic_proprio = np.concatenate(
+        num_obs = gyro.shape[0]
+        diff = np.asarray(dof_pos - self.default_angles[None, :], dtype=get_global_dtype()).copy()
+        diff[:, [3, 7]] = 0.0
+        proprio = np.concatenate(
             [
-                linvel,
                 gyro,
                 projected_gravity,
                 commands[:, :3],
@@ -494,21 +617,18 @@ class D1HRoughEnv(D1HBaseEnv):
             axis=1,
             dtype=get_global_dtype(),
         )
-        if critic_proprio.shape != (linvel.shape[0], self._cfg.n_proprio):
+        if proprio.shape != (num_obs, self._cfg.n_proprio):
             raise ValueError(
-                f"D1H critic proprio must have shape ({linvel.shape[0]}, {self._cfg.n_proprio}), "
-                f"got {critic_proprio.shape}"
+                f"D1H proprio must have shape ({num_obs}, {self._cfg.n_proprio}), "
+                f"got {proprio.shape}"
             )
-        return critic_proprio
+        return proprio
 
     def _compute_critic_obs(
         self,
         critic_proprio: np.ndarray,
         info: dict[str, Any],
         linvel: np.ndarray,
-        projected_gravity: np.ndarray,
-        dof_vel: np.ndarray,
-        base_height: np.ndarray,
         *,
         env_ids: np.ndarray | None = None,
     ) -> np.ndarray:
@@ -520,19 +640,13 @@ class D1HRoughEnv(D1HBaseEnv):
             ids = np.asarray(env_ids, dtype=np.intp)
             height_scan = height_scan_obs(self, self._cfg.terrain_scan, self._num_envs)[ids]
             history = self._critic_proprio_history[ids]
-        privileged = self._compute_privileged_latent(
-            info=info,
-            linvel=linvel,
-            up=-projected_gravity,
-            dof_vel=dof_vel,
-            base_height=base_height,
-        )
+        privileged = self._compute_privileged_latent(info=info, linvel=linvel)
         critic_obs = np.concatenate(
             [
                 critic_proprio,
                 height_scan,
-                history.reshape(num_obs, self._cfg.history_len * self._cfg.n_proprio),
                 privileged,
+                history.reshape(num_obs, self._cfg.history_len * self._cfg.n_proprio),
             ],
             axis=1,
             dtype=get_global_dtype(),
@@ -544,51 +658,46 @@ class D1HRoughEnv(D1HBaseEnv):
             )
         return critic_obs
 
+    def _info_array(self, info: dict[str, Any], name: str, shape: tuple[int, int], fill: float) -> np.ndarray:
+        value = info.get(name)
+        if value is None:
+            return np.full(shape, fill, dtype=get_global_dtype())
+        arr = np.asarray(value, dtype=get_global_dtype())
+        if arr.shape != shape:
+            return np.resize(arr, shape).astype(get_global_dtype(), copy=False)
+        return arr
+
     def _compute_privileged_latent(
         self,
         info: dict[str, Any],
         linvel: np.ndarray,
-        up: np.ndarray,
-        dof_vel: np.ndarray,
-        base_height: np.ndarray,
     ) -> np.ndarray:
         num_obs = linvel.shape[0]
-        torques = np.asarray(
-            info.get("current_torques", np.zeros((num_obs, NUM_D1H_ACTIONS))),
-            dtype=get_global_dtype(),
+        foot_contact = np.asarray(
+            info.get("foot_contact", np.zeros((num_obs, 2), dtype=bool)), dtype=get_global_dtype()
         )
-        actions = np.asarray(
-            info.get("current_actions", np.zeros((num_obs, NUM_D1H_ACTIONS))),
-            dtype=get_global_dtype(),
-        )
-        friction = np.ones((num_obs, 1), dtype=get_global_dtype())
-        mass_placeholders = np.zeros((num_obs, 4), dtype=get_global_dtype())
         latent = np.concatenate(
             [
                 linvel,
-                base_height.reshape(num_obs, 1),
-                up,
-                friction,
-                mass_placeholders,
-                torques,
-                actions,
-                dof_vel[:, :5],
+                foot_contact - 0.5,
+                self._info_array(info, "randomized_lag_tensor", (num_obs, 1), 0.0),
+                self._info_array(info, "mass_params_tensor", (num_obs, 4), 0.0),
+                self._info_array(info, "friction_coeffs_tensor", (num_obs, 1), 1.0),
+                self._info_array(info, "restitution_coeffs_tensor", (num_obs, 1), 0.0),
+                self._info_array(info, "motor_strength", (num_obs, NUM_D1H_ACTIONS), 1.0),
+                self._info_array(info, "kp_factor", (num_obs, NUM_D1H_ACTIONS), 1.0),
+                self._info_array(info, "kd_factor", (num_obs, NUM_D1H_ACTIONS), 1.0),
             ],
             axis=1,
             dtype=get_global_dtype(),
         )
-        if latent.shape[1] < self._cfg.n_priv_latent:
-            pad = np.zeros(
-                (num_obs, self._cfg.n_priv_latent - latent.shape[1]), dtype=get_global_dtype()
-            )
-            latent = np.concatenate([latent, pad], axis=1, dtype=get_global_dtype())
-        latent = latent[:, : self._cfg.n_priv_latent]
         if latent.shape != (num_obs, self._cfg.n_priv_latent):
             raise ValueError(
                 f"D1H privileged latent must have shape ({num_obs}, {self._cfg.n_priv_latent}), "
                 f"got {latent.shape}"
             )
         return latent
+
 
     def _update_foot_state(
         self, info: dict[str, Any], *, env_ids: np.ndarray | None = None, reset: bool = False
@@ -644,6 +753,7 @@ class D1HRoughEnv(D1HBaseEnv):
             base_pos = np.asarray(self._backend.get_base_pos(), dtype=get_global_dtype())
             terminated |= np.any(np.abs(base_pos[:, :2]) > float(max_abs_xy), axis=1)
         info["collision"] = terminated.astype(get_global_dtype())
+        info["termination"] = terminated.astype(get_global_dtype())
         return np.asarray(terminated, dtype=bool)
 
     def _compute_reward(
@@ -656,11 +766,20 @@ class D1HRoughEnv(D1HBaseEnv):
         dof_vel: np.ndarray,
         base_height: np.ndarray,
     ) -> np.ndarray:
-        del base_height
         info["stand_still_command_threshold"] = float(
             self._reward_cfg.stand_still_command_threshold
         )
         info["desired_feet_distance"] = float(self._reward_cfg.desired_feet_distance)
+        info["feet_distance_range"] = np.asarray(
+            self._reward_cfg.feet_distance_range, dtype=get_global_dtype()
+        )
+        info["head_los_forward_offset"] = float(self._reward_cfg.head_los_forward_offset)
+        info["head_los_deadband"] = float(self._reward_cfg.head_los_deadband)
+        info["head_los_max_distance"] = float(self._reward_cfg.head_los_max_distance)
+        info["both_feet_air_contact_force"] = float(self._reward_cfg.both_feet_air_contact_force)
+        info["both_feet_air_grace_time"] = float(self._reward_cfg.both_feet_air_grace_time)
+        info["both_feet_air_ramp_time"] = float(self._reward_cfg.both_feet_air_ramp_time)
+        info["base_ang_vel"] = np.asarray(self._backend.get_base_ang_vel(), dtype=get_global_dtype())
         ctx = RewardContext(
             info=info,
             linvel=linvel,
@@ -671,7 +790,7 @@ class D1HRoughEnv(D1HBaseEnv):
             default_angles=self.default_angles.astype(get_global_dtype()),
             tracking_sigma=float(self._reward_cfg.tracking_sigma),
             base_height_target=float(self._reward_cfg.base_height_target),
-            base_height=base_height_from_scan(self, linvel.shape[0]),
+            base_height=base_height,
             gravity=up,
         )
         return run_reward_dispatch(
@@ -682,6 +801,7 @@ class D1HRoughEnv(D1HBaseEnv):
             enable_log=self._enable_reward_log,
             ctrl_dt=self._cfg.ctrl_dt,
         )
+
 
     def _compute_truncated(self, state: NpEnvState) -> np.ndarray:
         truncated = super()._compute_truncated(state)
