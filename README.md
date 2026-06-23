@@ -1,3 +1,14 @@
+训练
+uv run --no-sync train --algo ppo --task d1h_rough --sim mujoco \
+  --render-mode none \
+  training.no_play=true \
+  algo.num_envs=8 \
+  algo.max_iterations=1
+
+
+
+
+
 <h1 align="center"> UniLab </h1>
 
 <h3 align="center">

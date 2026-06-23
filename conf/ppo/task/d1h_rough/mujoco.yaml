@@ -1,0 +1,85 @@
+# @package _global_
+training:
+  task_name: d1h_rough
+  sim_backend: mujoco
+  no_play: true
+  play_render_mode: none
+  play_steps: 500
+  play_env_num: 8
+  render_spacing: 0.0
+
+algo:
+  num_envs: 2048
+  num_steps_per_env: 24
+  max_iterations: 1500
+  empirical_normalization: false
+  obs_groups:
+    actor:
+      - obs
+    critic:
+      - obs
+  policy:
+    init_noise_std: 1.0
+  algorithm:
+    learning_rate: 1.0e-3
+    entropy_coef: 1.0e-2
+
+env:
+  sim_dt: 0.0025
+  ctrl_dt: 0.01
+  max_episode_seconds: 20.0
+
+  num_actions: 8
+  n_proprio: 36
+  n_scan: 187
+  history_len: 10
+  n_priv_latent: 33
+  policy_obs_dim: 616
+
+  scene:
+    model_file: src/unilab/assets/robots/d1h/scene.xml
+
+  control_config:
+    action_scale: 0.5
+    hip_scale_reduction: 0.5
+    clip_actions: 1.0
+    kp_hip: 40.0
+    kd_hip: 1.0
+    kp_thigh: 40.0
+    kd_thigh: 1.0
+    kp_calf: 40.0
+    kd_calf: 1.0
+    wheel_kp: 10.0
+    wheel_kd: 0.6
+    torque_limit_leg: 80.0
+    torque_limit_wheel: 12.0
+
+  commands:
+    vel_limit:
+      - [0.0, 0.0, -0.5]
+      - [0.5, 0.0, 0.5]
+    resampling_time: 6.0
+    heading_command: false
+    rel_standing_envs: 0.1
+
+reward:
+  scales:
+    tracking_lin_vel_x: 2.0
+    tracking_lin_vel_y: 1.0
+    tracking_ang_vel: 1.0
+    lin_vel_z: -2.0
+    ang_vel_xy: -0.05
+    base_height: -5.0
+    orientation: -2.0
+    action_rate: -0.01
+    torque: -2.0e-5
+    dof_vel: -1.0e-4
+    alive: 0.2
+    stand_still: -0.5
+    feet_air_time: 0.2
+    body_feet_distance_x: -0.5
+    feet_distance: -0.5
+    collision: -1.0
+  tracking_sigma: 0.25
+  base_height_target: 0.16
+  stand_still_command_threshold: 0.1
