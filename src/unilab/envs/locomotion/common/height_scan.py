@@ -1,12 +1,8 @@
-"""Shared height-scan and terrain-bound helpers for rough locomotion envs.
+﻿"""Shared height-scan and terrain-bound helpers for rough locomotion envs.
 
-These functions and the ``HeightScanConfig`` dataclass are consumed by Go2,
-Go2W, Go1, and G1 rough environments — anywhere the policy / critic ingests
-a forward-looking height grid sampled from a procedural heightfield.
-
-Each helper mirrors the original implementation that lived inline in
-``go2/rough.py`` so that behavior is bit-for-bit identical; the only change
-is the host: env classes import these instead of redefining them.
+These functions and ``HeightScanConfig`` are consumed by rough locomotion
+environments that ingest a forward-looking height grid sampled from a procedural
+heightfield.
 """
 
 from __future__ import annotations
@@ -80,12 +76,7 @@ def configured_height_scan_dim(scan_cfg: HeightScanConfig) -> int:
 
 
 def init_height_scan_sensor(env: Any, scan_cfg: HeightScanConfig, base_body_name: str) -> None:
-    """Wire a yaw-aligned heightfield scanner onto ``env``.
-
-    Sets the following attributes on ``env``:
-        _height_scan_dim, _height_scan_hfield_geom_id, _height_scan_frame_body_id,
-        _height_scan_offsets, _height_scan_sensor.
-    """
+    """Wire a yaw-aligned heightfield scanner onto ``env``."""
     env._height_scan_dim = configured_height_scan_dim(scan_cfg)
     if env._height_scan_dim <= 0:
         raise ValueError("terrain_scan measured points must be non-empty")
@@ -98,7 +89,10 @@ def init_height_scan_sensor(env: Any, scan_cfg: HeightScanConfig, base_body_name
         return
 
     env._height_scan_hfield_geom_id = env._backend.get_geom_id(scan_cfg.geom_name)
-    env._height_scan_frame_body_id = env._backend.get_body_id(base_body_name)
+    if hasattr(env._backend, "get_body_id"):
+        env._height_scan_frame_body_id = int(env._backend.get_body_id(base_body_name))
+    else:
+        env._height_scan_frame_body_id = int(env._backend.get_body_ids((base_body_name,))[0])
     env._height_scan_offsets = height_scan_offsets(
         scan_cfg.measured_points_x,
         scan_cfg.measured_points_y,
@@ -113,7 +107,7 @@ def init_height_scan_sensor(env: Any, scan_cfg: HeightScanConfig, base_body_name
 
 
 def raw_height_scan_obs(env: Any, num_obs: int) -> tuple[np.ndarray | None, np.ndarray | None]:
-    """Return (raw_heights (N, P), base_pos (N, 3)) or (None, None) if sensor not ready."""
+    """Return (raw_heights (N, P), base_pos (N, 3)) or (None, None) if unavailable."""
     if (
         env._height_scan_hfield_geom_id is None
         or env._height_scan_frame_body_id is None
@@ -142,7 +136,7 @@ def height_scan_obs(env: Any, scan_cfg: HeightScanConfig, num_obs: int) -> np.nd
 
 
 def base_height_from_scan(env: Any, num_obs: int | None = None) -> np.ndarray:
-    """Estimate base-relative height by averaging the heightfield samples below the body."""
+    """Estimate base-relative height by averaging heightfield samples below the body."""
     if num_obs is None:
         num_obs = int(np.asarray(env._backend.get_base_pos()).shape[0])
     raw_heights, base_pos = raw_height_scan_obs(env, num_obs)
