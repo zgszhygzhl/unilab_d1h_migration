@@ -138,10 +138,4 @@
     <framepos name="frame_pos" objtype="site" objname="trunk_imu" />
     <framelinvel name="frame_vel" objtype="site" objname="trunk_imu" />
   </sensor>
-
-  <keyframe>
-    <key name="home"
-         qpos="0 0 0.16 1 0 0 0  0.2 1.3 -2.75 0  -0.2 1.3 -2.75 0"
-         qvel="0 0 0 0 0 0  0 0 0 0 0 0 0 0"/>
-  </keyframe>
 </mujoco>

@@ -195,17 +195,15 @@ class D1HBaseEnv(LocomotionBaseEnv):
         torques[:, wheel_ids] = self._kp[wheel_ids] * actions_scaled[:, wheel_ids]
         torques[:, wheel_ids] -= self._kd[wheel_ids] * dof_vel[:, wheel_ids]
 
-        np.clip(
+        torques[:, leg_ids] = np.clip(
             torques[:, leg_ids],
             -float(cfg.torque_limit_leg),
             float(cfg.torque_limit_leg),
-            out=torques[:, leg_ids],
         )
-        np.clip(
+        torques[:, wheel_ids] = np.clip(
             torques[:, wheel_ids],
             -float(cfg.torque_limit_wheel),
             float(cfg.torque_limit_wheel),
-            out=torques[:, wheel_ids],
         )
 
         state.info["last_torques"] = np.asarray(
