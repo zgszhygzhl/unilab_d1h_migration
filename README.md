@@ -9,18 +9,39 @@ uv run --no-sync train \
   algo.max_iterations=10000
 
 推理录制
-uv run --no-sync train \
+uv run --no-sync eval \
   --algo ppo \
   --task d1h_rough \
   --sim mujoco \
-  --render-mode none \
-  training.play_only=true \
-  training.no_play=false \
-  training.play_render_mode=record \
+  --render-mode record \
+  --load-run 2026-06-24_12-16-42_mujoco \
+  algo.checkpoint=9 \
   training.play_steps=1000 \
+  training.play_env_num=8
+
+
+uv run --no-sync eval \
+  --algo ppo \
+  --task d1h_rough \
+  --sim mujoco \
+  --render-mode record \
+  --load-run 2026-06-24_12-16-42_mujoco \
+  algo.checkpoint=9 \
+  training.play_steps=300 \
   training.play_env_num=8 \
-  algo.load_run=2026-xx-xx_xx-xx-xx_mujoco \
-  algo.checkpoint=500
+  training.cam_tracking=true \
+  training.cam_tracking_env_idx=0 \
+  training.cam_tracking_extra_envs=2 \
+  training.cam_distance=4.0 \
+  training.cam_elevation=-25 \
+  training.cam_azimuth=90 \
+  training.render_spacing=2.0
+
+
+uv run --no-sync tensorboard \
+  --logdir logs/rsl_rl_ppo/d1h_rough \
+  --host 0.0.0.0 \
+  --port 6006
 
 
 <h1 align="center"> UniLab </h1>

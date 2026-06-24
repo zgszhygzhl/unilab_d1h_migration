@@ -59,7 +59,7 @@ env:
         num_cols: 6
         border_width: 1.0
         add_lights: true
-        horizontal_scale: 0.2
+        horizontal_scale: 0.05
 
   terrain_scan:
     enabled: true

@@ -240,7 +240,7 @@ def _build_mujoco_scene_context(scene: SceneCfg) -> _MuJoCoSceneContext:
 
     output_dir = tempfile.TemporaryDirectory(prefix="unilab_scene_")
     try:
-        model, terrain_origins, terrain_surface_sampler = materialize_mujoco_hfield_attached_scene(
+        _compiled_model, terrain_origins, terrain_surface_sampler = materialize_mujoco_hfield_attached_scene(
             model_file=scene.model_file,
             terrain_cfg=scene.terrain.generator,
             output_dir=output_dir.name,
@@ -249,14 +249,17 @@ def _build_mujoco_scene_context(scene: SceneCfg) -> _MuJoCoSceneContext:
             geom_name=scene.terrain.geom_name or "floor",
             return_surface_sampler=True,
         )
+
+        scene_xml = os.path.join(output_dir.name, "scene.xml")
+
     except Exception:
         output_dir.cleanup()
         raise
 
     return _MuJoCoSceneContext(
-        model_source=model,
+        model_source=scene_xml,
         model_file=scene.model_file,
-        visual_model_file=os.path.join(output_dir.name, "scene.xml"),
+        visual_model_file=scene_xml,
         artifacts_dir=output_dir.name,
         terrain_origins=terrain_origins,
         terrain_surface_sampler=terrain_surface_sampler,
