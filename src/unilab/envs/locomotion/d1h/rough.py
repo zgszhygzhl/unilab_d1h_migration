@@ -76,26 +76,26 @@ class D1HTerminationConfig:
 @dataclass(kw_only=True)
 class D1HRoughTerrainCfg(TerrainGeneratorCfg):
     size: tuple[float, float] = (8.0, 8.0)
-    num_rows: int = 6
-    num_cols: int = 6
+    num_rows: int = 10
+    num_cols: int = 10
     border_width: float = 1.0
     add_lights: bool = True
-    horizontal_scale: float = 0.2
+    horizontal_scale: float = 0.05
 
     sub_terrains: dict[str, SubTerrainCfg] = field(
         default_factory=lambda: {
             "flat": flat(proportion=0.1),
             "pyramid_stairs": pyramid_stairs(
-                proportion=0.85,
-                step_height_range=(0.015, 0.16),
-                step_width=0.56,
+                proportion=0.8,
+                step_height_range=(0.02, 0.16),
+                step_width=0.55,
                 platform_width=3.0,
                 border_width=0.2,
             ),
             "pyramid_stairs_inv": pyramid_stairs_inv(
-                proportion=0.05,
-                step_height_range=(0.015, 0.16),
-                step_width=0.56,
+                proportion=0.1,
+                step_height_range=(0.02, 0.16),
+                step_width=0.55,
                 platform_width=3.0,
                 border_width=0.2,
             ),

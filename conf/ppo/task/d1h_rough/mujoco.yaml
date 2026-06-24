@@ -53,7 +53,7 @@ env:
       geom_name: floor
       generator:
         seed: 42
-        curriculum: false
+        curriculum: true
         size: [8.0, 8.0]
         num_rows: 6
         num_cols: 6
@@ -66,7 +66,7 @@ env:
     geom_name: floor
 
   terrain_curriculum:
-    enabled: false
+    enabled: true
 
   termination_config:
     min_base_height: 0.05
@@ -91,8 +91,8 @@ env:
 
   commands:
     vel_limit:
-      - [-0.5, -0.2, -1.0]
-      - [0.5, 0.2, 1.0]
+      - [-0.3, -0.5, -0.5]
+      - [1.0, 0.5, 0.5]
     commands_proportion: [0.45, 0.1, 0.1, 0.1, 0.05, 0.05, 0.05, 0.05, 0.05]
     resampling_time: 10.0
     heading_command: false
@@ -121,8 +121,8 @@ reward:
     action_rate: -0.1
     stand_still: -1.0
     orientation: -10.0
-    no_gait: 5.0
-    both_feet_air: -10.0
+    no_gait: 1.0
+    both_feet_air: -20.0
     body_pos_to_feet_x: 1.0
     body_feet_distance_x: -50.0
     body_feet_distance_y: -100.0
@@ -139,6 +139,6 @@ reward:
   head_los_forward_offset: 0.0
   head_los_deadband: 0.05
   head_los_max_distance: 0.35
-  both_feet_air_contact_force: 1.0
-  both_feet_air_grace_time: 0.04
-  both_feet_air_ramp_time: 0.08
+  both_feet_air_contact_force: 3.0
+  both_feet_air_grace_time: 0.02
+  both_feet_air_ramp_time: 0.03
