@@ -469,8 +469,11 @@ class D1HRoughEnv(D1HBaseEnv):
 
     def _update_commands(self, info: dict[str, Any]) -> None:
         dtype = get_global_dtype()
+
         target = info.get("target_commands")
         commands = info.get("commands")
+
+        # If commands are missing, initialize target_commands and smoothed commands.
         if target is None:
             target_arr = self._sample_commands(self._num_envs)
             info["target_commands"] = target_arr
@@ -482,21 +485,43 @@ class D1HRoughEnv(D1HBaseEnv):
             commands if commands is not None else self._initial_smoothed_commands(target_arr),
             dtype=dtype,
         )
+
+        # ------------------------------------------------------------
+        # 1. Resample target commands at the configured interval.
+        #    This corresponds to _resample_commands() in y1v0h_evt1_command.py.
+        # ------------------------------------------------------------
         resampling_time = float(self._cfg.commands.resampling_time)
         if resampling_time > 0.0:
             interval_steps = max(int(round(resampling_time / self._cfg.ctrl_dt)), 1)
-            steps = np.asarray(info.get("steps", np.zeros((self._num_envs,), dtype=np.uint32)))
-            resample_mask = (steps > 0) & ((steps % interval_steps) == 0)
-            if np.any(resample_mask):
-                num_resample = int(np.count_nonzero(resample_mask))
-                sampled = self._sample_commands(num_resample)
-                sampled = self._maybe_flip_same_sign_commands(sampled, target_arr[resample_mask])
-                target_arr[resample_mask] = sampled
-                if self._cfg.commands.heading_command:
-                    heading_commands = self._ensure_heading_commands(info, target_arr.shape[0])
-                    heading_commands[resample_mask] = sample_heading_commands(self, num_resample)
-                    info["heading_commands"] = heading_commands
+            steps = np.asarray(
+                info.get("steps", np.zeros((self._num_envs,), dtype=np.uint32))
+            )
 
+            resample_mask = (steps > 0) & ((steps % interval_steps) == 0)
+
+            if np.any(resample_mask):
+                # Keep the same probabilistic resampling logic as the original:
+                # resample_prob = clamp(resampling_time / 10, 0.1, 1.0)
+                resample_prob = np.clip(resampling_time / 10.0, 0.1, 1.0)
+                candidate_ids = np.where(resample_mask)[0]
+                keep = self._rng.uniform(size=(candidate_ids.shape[0],)) <= resample_prob
+                resample_ids = candidate_ids[keep]
+
+                if resample_ids.shape[0] > 0:
+                    sampled = self._sample_commands(int(resample_ids.shape[0]))
+                    target_arr[resample_ids] = sampled
+
+                    if self._cfg.commands.heading_command:
+                        heading_commands = self._ensure_heading_commands(info, target_arr.shape[0])
+                        heading_commands[resample_ids] = sample_heading_commands(
+                            self, int(resample_ids.shape[0])
+                        )
+                        info["heading_commands"] = heading_commands
+
+        # ------------------------------------------------------------
+        # 2. Heading command feedback.
+        #    If heading_command=True, convert heading target to yaw-rate target.
+        # ------------------------------------------------------------
         if self._cfg.commands.heading_command:
             heading_commands = self._ensure_heading_commands(info, target_arr.shape[0])
             apply_heading_yaw_feedback(
@@ -507,6 +532,43 @@ class D1HRoughEnv(D1HBaseEnv):
                 clip=1.0,
             )
 
+        # ------------------------------------------------------------
+        # 3. Compute odometry velocity, matching original compute_given_commands().
+        #
+        # Original:
+        #   odemetry_vel[:, :2] = base_lin_vel[:, :2]
+        #   odemetry_vel[:, 2]  = base_ang_vel[:, 2]
+        #
+        # In UniLab:
+        #   get_base_lin_vel() is world-frame, so rotate it into body frame.
+        #   trunk_gyro is body-frame angular velocity.
+        # ------------------------------------------------------------
+        base_quat = np.asarray(self._backend.get_base_quat(), dtype=dtype)
+        world_linvel = np.asarray(self._backend.get_base_lin_vel(), dtype=dtype)
+        body_linvel = np_quat_apply_inverse(base_quat, world_linvel)
+
+        try:
+            body_angvel = np.asarray(self._backend.get_sensor_data("trunk_gyro"), dtype=dtype)
+        except KeyError:
+            body_angvel = np.asarray(self._backend.get_base_ang_vel(), dtype=dtype)
+
+        odometry_vel = np.zeros_like(commands_arr, dtype=dtype)
+        odometry_vel[:, :2] = body_linvel[:, :2]
+        odometry_vel[:, 2] = body_angvel[:, 2]
+
+        # ------------------------------------------------------------
+        # 4. Compute smoothed commands, matching original logic.
+        #
+        # Original:
+        #   command_diff = target_command - odometry_vel
+        #   if abs(diff) > max_allowed_change:
+        #       commands_given += sign(diff) * max_allowed_change
+        #   else:
+        #       commands_given = target_command
+        #
+        # Important:
+        #   Do NOT multiply max_allowed_change by buffer_smoothing_factor.
+        # ------------------------------------------------------------
         if bool(self._cfg.commands.enable_command_buffer):
             max_change_rates = np.asarray(
                 [
@@ -516,22 +578,39 @@ class D1HRoughEnv(D1HBaseEnv):
                 ],
                 dtype=dtype,
             )
-            max_change_per_step = max_change_rates[None, :] * float(self._cfg.ctrl_dt)
-            diff = target_arr[:, :3] - commands_arr[:, :3]
-            is_braking = (np.abs(target_arr[:, :3]) < 0.1) & (
-                np.abs(target_arr[:, :3]) <= np.abs(commands_arr[:, :3])
-            )
-            allowed = np.where(is_braking, 2.0 * max_change_per_step, max_change_per_step)
-            smoothing_factor = float(getattr(self._cfg.commands, "buffer_smoothing_factor", 1.0))
-            if smoothing_factor > 0.0:
-                allowed = allowed * min(max(smoothing_factor, 0.0), 1.0)
-            step = np.clip(diff, -allowed, allowed)
-            commands_arr[:, :3] += step
+
+            max_change_per_step = max_change_rates * float(self._cfg.ctrl_dt)
+
+            command_diff = target_arr[:, :3] - odometry_vel[:, :3]
+            diff_magnitude = np.abs(command_diff)
+
+            for i in range(3):
+                max_allowed_change = max_change_per_step[i]
+
+                # Braking condition from original:
+                # target command is close to zero and smaller than current odometry velocity.
+                is_braking = (np.abs(target_arr[:, i]) < 0.1) & (
+                    np.abs(target_arr[:, i]) <= np.abs(odometry_vel[:, i])
+                )
+
+                allowed_i = np.where(
+                    is_braking,
+                    2.0 * max_allowed_change,
+                    max_allowed_change,
+                ).astype(dtype)
+
+                new_command_i = np.where(
+                    diff_magnitude[:, i] > allowed_i,
+                    commands_arr[:, i] + np.sign(command_diff[:, i]) * allowed_i,
+                    target_arr[:, i],
+                )
+
+                commands_arr[:, i] = new_command_i
         else:
             commands_arr[:, :3] = target_arr[:, :3]
 
         info["target_commands"] = target_arr
-        info["commands"] = commands_arr
+        info["commands"] = commands_arr 
 
 
     def _ensure_heading_commands(self, info: dict[str, Any], num_obs: int) -> np.ndarray:

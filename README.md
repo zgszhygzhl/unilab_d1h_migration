@@ -1,12 +1,26 @@
 训练
-uv run --no-sync train --algo ppo --task d1h_rough --sim mujoco \
+uv run --no-sync train \
+  --algo ppo \
+  --task d1h_rough \
+  --sim mujoco \
   --render-mode none \
   training.no_play=true \
-  algo.num_envs=8 \
-  algo.max_iterations=1
+  algo.num_envs=4096 \
+  algo.max_iterations=10000
 
-
-
+推理录制
+uv run --no-sync train \
+  --algo ppo \
+  --task d1h_rough \
+  --sim mujoco \
+  --render-mode none \
+  training.play_only=true \
+  training.no_play=false \
+  training.play_render_mode=record \
+  training.play_steps=1000 \
+  training.play_env_num=8 \
+  algo.load_run=2026-xx-xx_xx-xx-xx_mujoco \
+  algo.checkpoint=500
 
 
 <h1 align="center"> UniLab </h1>
